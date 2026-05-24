@@ -1,0 +1,15 @@
+fastapi==0.104.1
+uvicorn==0.24.0
+python-dotenv==1.0.0
+pymupdf==1.23.8
+sentence-transformers==2.3.1
+chromadb==0.4.22
+groq==0.4.2
+sqlalchemy==2.0.23
+python-multipart==0.0.6
+pytesseract==0.3.10
+Pillow==10.1.0
+pypdfium2>=4.30.0
+httpx>=0.25.0
+python-jose[cryptography]>=3.3.0
+# torch is installed separately with CUDA 12.1 support — see setup commands below

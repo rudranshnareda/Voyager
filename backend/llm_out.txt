@@ -1,0 +1,12 @@
+Calling generate_answer...
+
+--- Answer ---
+RAG, or Retrieval-Augmented Generation, combines a dense retrieval system with a generative language model (ai_overview.pdf, Page 2). It works by having the retriever fetch relevant passages from a document store, and then the generator conditions its output on those passages to produce grounded, cited answers (ai_overview.pdf, Page 2).
+
+--- Citations ---
+  ai_overview.pdf, Page 2
+  Excerpt: "Retrieval-Augmented Generation (RAG) combines a dense retrieval system with a ge..."
+  ai_overview.pdf, Page 4
+  Excerpt: "ChromaDB is an open-source vector database that stores embedding vectors and sup..."
+
+LLMClient smoke test OK.
