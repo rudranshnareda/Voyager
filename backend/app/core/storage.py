@@ -1,3 +1,4 @@
+import json
 import logging
 import os
 import threading
@@ -108,8 +109,8 @@ def delete_files(object_keys: List[str]) -> None:
         return
     resp = httpx.delete(
         f"{SUPABASE_URL}/storage/v1/object/{BUCKET}",
-        json={"prefixes": object_keys},
-        headers=_headers(),
+        content=json.dumps({"prefixes": object_keys}),
+        headers={**_headers(), "Content-Type": "application/json"},
         timeout=30.0,
     )
     resp.raise_for_status()
