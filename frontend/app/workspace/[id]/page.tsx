@@ -10,6 +10,7 @@ import ConfirmDialog from "@/components/ConfirmDialog";
 import type { HighlightedText } from "@/components/PDFViewer";
 import {
   createChat,
+  deleteChat,
   deleteDocument,
   retryDocument,
   getChat,
@@ -436,43 +437,141 @@ function TypingIndicator() {
 // Phrases that automatically trigger web search for a single message
 const WEB_SEARCH_RE = /\b(search(\s+for)?|look\s+up|google|find\s+recent|recent\s+updates?|latest\s+(news|updates?|research|info|information)|current\s+news|what('s|\s+is)\s+(new|happening)|news\s+about)\b/i;
 
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+function relativeDate(iso: string): string {
+  const diff = (Date.now() - new Date(iso).getTime()) / 1000;
+  if (diff < 3600) return `${Math.max(1, Math.floor(diff / 60))}m ago`;
+  if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
+  if (diff < 172800) return "Yesterday";
+  return new Date(iso).toLocaleDateString(undefined, { month: "short", day: "numeric" });
+}
+
+// ── Chat history view ─────────────────────────────────────────────────────────
+
+function ChatHistoryView({
+  chats,
+  loadingChats,
+  workspaceName,
+  workspaceEmoji,
+  onSelectChat,
+  onNewChat,
+  onDeleteChat,
+}: {
+  chats: Chat[];
+  loadingChats: boolean;
+  workspaceName: string;
+  workspaceEmoji: string;
+  onSelectChat: (id: string) => void;
+  onNewChat: () => void;
+  onDeleteChat: (id: string) => void;
+}) {
+  return (
+    <div className="flex flex-col h-full bg-zinc-900">
+      {/* Header */}
+      <div className="px-4 py-4 border-b border-zinc-800 shrink-0">
+        <div className="flex items-center gap-2 mb-0.5">
+          <span className="text-xl leading-none">{workspaceEmoji}</span>
+          <h2 className="text-sm font-semibold text-white truncate">{workspaceName}</h2>
+        </div>
+        <p className="text-xs text-zinc-500 mt-1">{chats.length} chat{chats.length !== 1 ? "s" : ""}</p>
+      </div>
+
+      {/* New Chat button */}
+      <div className="px-4 py-3 shrink-0">
+        <button
+          onClick={onNewChat}
+          className="w-full flex items-center justify-center gap-2 px-4 py-2.5 bg-indigo-500 hover:bg-indigo-400 text-white text-sm font-medium rounded-xl transition-colors"
+        >
+          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" />
+          </svg>
+          New Chat
+        </button>
+      </div>
+
+      {/* Chat list */}
+      <div className="flex-1 overflow-y-auto px-2 pb-4">
+        {loadingChats ? (
+          <div className="flex justify-center py-8">
+            <svg className="w-5 h-5 text-zinc-600 animate-spin" fill="none" viewBox="0 0 24 24">
+              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+            </svg>
+          </div>
+        ) : chats.length === 0 ? (
+          <div className="flex flex-col items-center justify-center py-12 text-center px-4">
+            <div className="w-12 h-12 rounded-full bg-zinc-800 border border-zinc-700 flex items-center justify-center mb-3">
+              <svg className="w-5 h-5 text-zinc-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z" />
+              </svg>
+            </div>
+            <p className="text-sm text-zinc-500">No chats yet</p>
+            <p className="text-xs text-zinc-600 mt-1">Start a new chat above</p>
+          </div>
+        ) : (
+          chats.map((chat) => (
+            <div key={chat.id} className="group relative">
+              <button
+                onClick={() => onSelectChat(chat.id)}
+                className="w-full text-left px-3 py-3 rounded-xl hover:bg-zinc-800 transition-colors mb-0.5"
+              >
+                <p className="text-sm text-white font-medium truncate pr-8">
+                  {chat.title ?? "New Chat"}
+                </p>
+                <p className="text-xs text-zinc-500 mt-0.5">{relativeDate(chat.created_at)}</p>
+              </button>
+              <button
+                onClick={(e) => { e.stopPropagation(); onDeleteChat(chat.id); }}
+                className="absolute right-2 top-1/2 -translate-y-1/2 opacity-0 group-hover:opacity-100 p-1.5 rounded-lg text-zinc-600 hover:text-red-400 hover:bg-red-400/10 transition-all"
+                aria-label="Delete chat"
+              >
+                <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                </svg>
+              </button>
+            </div>
+          ))
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ── Chat panel ────────────────────────────────────────────────────────────────
 
 function ChatPanel({
   workspaceId,
+  chats,
+  setChats,
+  activeChatId,
+  setActiveChatId,
+  onShowHistory,
   indexingDocs,
   onCitationClick,
   highlightedContext,
   onClearHighlight,
 }: {
   workspaceId: string;
+  chats: Chat[];
+  setChats: React.Dispatch<React.SetStateAction<Chat[]>>;
+  activeChatId: string | null;
+  setActiveChatId: React.Dispatch<React.SetStateAction<string | null>>;
+  onShowHistory: () => void;
   indexingDocs: Document[];
   onCitationClick?: (filename: string, page: number) => void;
   highlightedContext?: HighlightedText | null;
   onClearHighlight?: () => void;
 }) {
-  const [chats, setChats] = useState<Chat[]>([]);
-  const [activeChatId, setActiveChatId] = useState<string | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
-  const [loadingChats, setLoadingChats] = useState(true);
   const [loadingMessages, setLoadingMessages] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [showFullHighlight, setShowFullHighlight] = useState(false);
   const [webSearch, setWebSearch] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
-
-  useEffect(() => {
-    getChats(workspaceId)
-      .then((data) => {
-        setChats(data);
-        if (data.length > 0) setActiveChatId(data[0].id);
-      })
-      .catch(() => setError("Could not load chats."))
-      .finally(() => setLoadingChats(false));
-  }, [workspaceId]);
 
   useEffect(() => {
     if (!activeChatId) { setMessages([]); return; }
@@ -487,25 +586,17 @@ function ChatPanel({
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, sending]);
 
-  // Collapse thumbnail whenever a new region is selected
   useEffect(() => { setShowFullHighlight(false); }, [highlightedContext]);
-
-  const handleNewChat = async () => {
-    try {
-      const chat = await createChat(workspaceId);
-      setChats((prev) => [chat, ...prev]);
-      setActiveChatId(chat.id);
-      setMessages([]);
-    } catch {
-      setError("Failed to create chat.");
-    }
-  };
 
   const doSend = async (chatId: string, text: string) => {
     const useWeb = webSearch || WEB_SEARCH_RE.test(text);
     const attachment = highlightedContext
       ? { text: highlightedContext.text, page_number: highlightedContext.page, image_data: highlightedContext.image_data ?? null }
       : null;
+    const currentChat = chats.find(c => c.id === chatId);
+    if (!currentChat?.title || currentChat.title === "New Chat") {
+      setChats(prev => prev.map(c => c.id === chatId ? { ...c, title: text.slice(0, 50) } : c));
+    }
     const optimistic: Message = {
       id: crypto.randomUUID(),
       chat_id: chatId,
@@ -556,38 +647,23 @@ function ChatPanel({
     }
   };
 
+  const activeTitle = chats.find(c => c.id === activeChatId)?.title ?? "New Chat";
+
   return (
     <div className="flex flex-col h-full">
       {/* Header */}
-      <div className="px-4 py-3 border-b border-zinc-800 flex items-center justify-between gap-3 shrink-0">
-        <div className="flex items-center gap-2 min-w-0">
-          {loadingChats ? (
-            <div className="h-8 w-28 bg-zinc-800 rounded-lg animate-pulse" />
-          ) : chats.length > 0 ? (
-            <select
-              value={activeChatId ?? ""}
-              onChange={(e) => setActiveChatId(e.target.value)}
-              className="bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-1.5 text-sm text-white outline-none focus:border-indigo-500 transition-colors max-w-[180px]"
-            >
-              {chats.map((c) => (
-                <option key={c.id} value={c.id}>
-                  {c.title ?? "Untitled Chat"}
-                </option>
-              ))}
-            </select>
-          ) : (
-            <span className="text-sm text-zinc-500">No chats yet</span>
-          )}
-        </div>
+      <div className="px-3 py-3 border-b border-zinc-800 flex items-center gap-2 shrink-0 min-w-0">
         <button
-          onClick={handleNewChat}
-          className="shrink-0 flex items-center gap-1.5 px-3 py-1.5 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 text-sm rounded-lg transition-colors"
+          onClick={onShowHistory}
+          className="shrink-0 flex items-center gap-1 px-2 py-1.5 rounded-lg text-zinc-400 hover:text-white hover:bg-zinc-800 text-xs font-medium transition-colors"
         >
           <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-            <path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" />
+            <path strokeLinecap="round" strokeLinejoin="round" d="M15 19l-7-7 7-7" />
           </svg>
-          New Chat
+          History
         </button>
+        <span className="text-zinc-700 select-none">|</span>
+        <p className="text-sm text-white font-medium truncate flex-1">{activeTitle}</p>
       </div>
 
       {/* Error */}
@@ -770,6 +846,11 @@ export default function WorkspacePage({
   const [currentPage, setCurrentPage] = useState(1);
   const [highlightedContext, setHighlightedContext] = useState<HighlightedText | null>(null);
   const [docPanelCollapsed, setDocPanelCollapsed] = useState(false);
+  const [chatPanelView, setChatPanelView] = useState<"history" | "active">("history");
+  const [chats, setChats] = useState<Chat[]>([]);
+  const [activeChatId, setActiveChatId] = useState<string | null>(null);
+  const [loadingChats, setLoadingChats] = useState(true);
+  const [pendingDeleteChat, setPendingDeleteChat] = useState<string | null>(null);
 
   const fetchWorkspace = useCallback(async () => {
     try {
@@ -795,6 +876,13 @@ export default function WorkspacePage({
     const t = setInterval(fetchWorkspace, 3000);
     return () => clearInterval(t);
   }, [workspace, fetchWorkspace]);
+
+  useEffect(() => {
+    getChats(id)
+      .then(setChats)
+      .catch(() => {})
+      .finally(() => setLoadingChats(false));
+  }, [id]);
 
   // Deselect only if the selected doc was deleted or failed
   useEffect(() => {
@@ -822,10 +910,25 @@ export default function WorkspacePage({
       if (doc) {
         setCurrentDocumentId(doc.id);
         setCurrentPage(page);
+        setChatPanelView("active");
       }
     },
     [workspace?.documents]
   );
+
+  const handleDeleteChat = async (chatId: string) => {
+    if (activeChatId === chatId) {
+      const next = chats.find(c => c.id !== chatId);
+      setActiveChatId(next?.id ?? null);
+      if (!next) setChatPanelView("history");
+    }
+    setChats(prev => prev.filter(c => c.id !== chatId));
+    try {
+      await deleteChat(chatId);
+    } catch {
+      setError("Failed to delete chat.");
+    }
+  };
 
   const handleUpload = async (file: File) => {
     if (!workspace) return;
@@ -1057,15 +1160,32 @@ export default function WorkspacePage({
         </>
       )}
 
-      {/* ── Panel 3: Chat — always visible ────────────────────────────────── */}
+      {/* ── Panel 3: History or Chat ───────────────────────────────────── */}
       <Panel defaultSize={35} minSize={20} className="flex flex-col overflow-hidden">
-        <ChatPanel
-          workspaceId={id}
-          indexingDocs={indexingDocs}
-          onCitationClick={handleCitationClick}
-          highlightedContext={highlightedContext}
-          onClearHighlight={() => setHighlightedContext(null)}
-        />
+        {chatPanelView === "history" ? (
+          <ChatHistoryView
+            chats={chats}
+            loadingChats={loadingChats}
+            workspaceName={workspace?.name ?? ""}
+            workspaceEmoji={workspace?.emoji ?? "📁"}
+            onSelectChat={(chatId) => { setActiveChatId(chatId); setChatPanelView("active"); }}
+            onNewChat={() => { setActiveChatId(null); setChatPanelView("active"); }}
+            onDeleteChat={(chatId) => setPendingDeleteChat(chatId)}
+          />
+        ) : (
+          <ChatPanel
+            workspaceId={id}
+            chats={chats}
+            setChats={setChats}
+            activeChatId={activeChatId}
+            setActiveChatId={setActiveChatId}
+            onShowHistory={() => setChatPanelView("history")}
+            indexingDocs={indexingDocs}
+            onCitationClick={handleCitationClick}
+            highlightedContext={highlightedContext}
+            onClearHighlight={() => setHighlightedContext(null)}
+          />
+        )}
       </Panel>
 
     </PanelGroup>
@@ -1078,6 +1198,16 @@ export default function WorkspacePage({
           danger
           onConfirm={confirmDeleteDoc}
           onCancel={() => setPendingDeleteDoc(null)}
+        />
+      )}
+      {pendingDeleteChat && (
+        <ConfirmDialog
+          title="Delete chat?"
+          body="All messages in this chat will be permanently deleted."
+          confirmLabel="Delete"
+          danger
+          onConfirm={() => { handleDeleteChat(pendingDeleteChat); setPendingDeleteChat(null); }}
+          onCancel={() => setPendingDeleteChat(null)}
         />
       )}
     </div>

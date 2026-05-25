@@ -466,6 +466,11 @@ def send_message(chat_id: str, body: MessageCreate, db: Session = Depends(get_db
             "image_data": body.highlighted_context.image_data,
         }
 
+    if chat.title is None or chat.title == "New Chat":
+        chat.title = body.content[:50].strip() or "New Chat"
+        db.add(chat)
+        db.commit()
+
     user_msg = Message(chat_id=chat_id, role="user", content=body.content, attachment=highlighted)
     db.add(user_msg)
     db.commit()
