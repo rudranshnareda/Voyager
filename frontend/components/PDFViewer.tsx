@@ -396,13 +396,37 @@ export default function PDFViewer({
     };
   }, [numPages, computeVisibleRange, applyRange, computeCurrentPage, onPageChange, applyZoom]);
 
-  // Programmatic scroll (citation clicks)
+  // Programmatic scroll (page input + citation clicks)
   useEffect(() => {
     if (numPages === 0 || currentPage === scrolledPageRef.current) return;
+
+    const prevPage = scrolledPageRef.current;
+    const idx = currentPage - 1;
+
+    // Pre-expand the virtual window to include the target page so PageImage
+    // mounts immediately instead of waiting for the scroll event to fire.
+    const { start, end } = visibleRangeRef.current;
+    if (idx < start || idx > end) {
+      const newRange = {
+        start: Math.max(0, idx - RENDER_BUFFER),
+        end: Math.min(numPages - 1, idx + RENDER_BUFFER),
+      };
+      visibleRangeRef.current = newRange;
+      setVisibleRange(newRange);
+    }
+
     programScrollRef.current = true;
     scrolledPageRef.current = currentPage;
-    pageRefs.current[currentPage - 1]?.scrollIntoView({ behavior: "smooth", block: "start" });
-    const t = setTimeout(() => { programScrollRef.current = false; }, 1200);
+
+    // Smooth scroll is nice for ±1 navigation but takes many seconds for large
+    // jumps (also renders every intermediate page, flooding the backend).
+    const isLargeJump = Math.abs(currentPage - prevPage) > 3;
+    pageRefs.current[idx]?.scrollIntoView({
+      behavior: isLargeJump ? "instant" : "smooth",
+      block: "start",
+    });
+
+    const t = setTimeout(() => { programScrollRef.current = false; }, isLargeJump ? 100 : 1200);
     return () => clearTimeout(t);
   }, [currentPage, numPages]);
 
