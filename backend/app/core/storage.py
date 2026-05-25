@@ -1,5 +1,6 @@
 import logging
 import os
+import threading
 from pathlib import Path
 from typing import List
 
@@ -14,6 +15,16 @@ SUPABASE_URL = os.getenv("SUPABASE_URL", "")
 SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_KEY", "")
 BUCKET = "documents"
 CACHE_DIR = Path("/tmp/voyager_cache")
+
+_download_locks: dict = {}
+_download_locks_mutex = threading.Lock()
+
+
+def _download_lock(key: str) -> threading.Lock:
+    with _download_locks_mutex:
+        if key not in _download_locks:
+            _download_locks[key] = threading.Lock()
+        return _download_locks[key]
 
 
 def _headers() -> dict:
@@ -52,22 +63,38 @@ def upload_file(object_key: str, data: bytes) -> None:
 
 
 def get_local_path(object_key: str, document_id: str) -> Path:
-    """Return a local path for the PDF, downloading from Supabase Storage if not cached."""
+    """Return a local path for the PDF, downloading from Supabase Storage if not cached.
+
+    Uses a per-key lock + atomic rename so concurrent page requests don't corrupt
+    the file by writing to the same path simultaneously.
+    """
     filename = object_key.split("/")[-1]
     local_path = CACHE_DIR / document_id / filename
     if local_path.exists() and local_path.stat().st_size > 0:
         return local_path
-    local_path.parent.mkdir(parents=True, exist_ok=True)
-    with httpx.stream(
-        "GET",
-        f"{SUPABASE_URL}/storage/v1/object/{BUCKET}/{object_key}",
-        headers=_headers(),
-        timeout=120.0,
-    ) as resp:
-        resp.raise_for_status()
-        with open(local_path, "wb") as f:
-            for chunk in resp.iter_bytes(chunk_size=65536):
-                f.write(chunk)
+
+    with _download_lock(object_key):
+        if local_path.exists() and local_path.stat().st_size > 0:
+            return local_path
+
+        local_path.parent.mkdir(parents=True, exist_ok=True)
+        tmp_path = local_path.with_suffix(".tmp")
+        try:
+            with httpx.stream(
+                "GET",
+                f"{SUPABASE_URL}/storage/v1/object/{BUCKET}/{object_key}",
+                headers=_headers(),
+                timeout=120.0,
+            ) as resp:
+                resp.raise_for_status()
+                with open(tmp_path, "wb") as f:
+                    for chunk in resp.iter_bytes(chunk_size=65536):
+                        f.write(chunk)
+            tmp_path.rename(local_path)
+        except Exception:
+            tmp_path.unlink(missing_ok=True)
+            raise
+
     logger.info("Downloaded %s → %s", object_key, local_path)
     return local_path
 
