@@ -1,6 +1,7 @@
 import json
 import logging
 import os
+import shutil
 import tempfile
 import threading
 from pathlib import Path
@@ -17,6 +18,9 @@ SUPABASE_URL = os.getenv("SUPABASE_URL", "")
 SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_KEY", "")
 BUCKET = "documents"
 CACHE_DIR = Path(tempfile.gettempdir()) / "voyager_cache"
+
+_local_storage_root = os.getenv("LOCAL_STORAGE_PATH", "")
+LOCAL_STORAGE: Path | None = Path(_local_storage_root) if _local_storage_root else None
 
 _download_locks: dict = {}
 _download_locks_mutex = threading.Lock()
@@ -37,6 +41,10 @@ def _headers() -> dict:
 
 
 def ensure_bucket() -> None:
+    if LOCAL_STORAGE:
+        LOCAL_STORAGE.mkdir(parents=True, exist_ok=True)
+        logger.info("Local storage at %s", LOCAL_STORAGE)
+        return
     if not SUPABASE_URL or not SUPABASE_SERVICE_KEY:
         logger.warning("Supabase not configured — skipping bucket creation")
         return
@@ -54,6 +62,12 @@ def ensure_bucket() -> None:
 
 
 def upload_file(object_key: str, data: bytes) -> None:
+    if LOCAL_STORAGE:
+        dest = LOCAL_STORAGE / object_key
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes(data)
+        logger.info("Saved %s locally (%d bytes)", object_key, len(data))
+        return
     resp = httpx.post(
         f"{SUPABASE_URL}/storage/v1/object/{BUCKET}/{object_key}",
         content=data,
@@ -65,11 +79,12 @@ def upload_file(object_key: str, data: bytes) -> None:
 
 
 def get_local_path(object_key: str, document_id: str) -> Path:
-    """Return a local path for the PDF, downloading from Supabase Storage if not cached.
+    if LOCAL_STORAGE:
+        path = LOCAL_STORAGE / object_key
+        if not path.exists():
+            raise FileNotFoundError(f"Local file not found: {path}")
+        return path
 
-    Uses a per-key lock + atomic rename so concurrent page requests don't corrupt
-    the file by writing to the same path simultaneously.
-    """
     filename = object_key.split("/")[-1]
     local_path = CACHE_DIR / document_id / filename
     if local_path.exists() and local_path.stat().st_size > 0:
@@ -108,7 +123,18 @@ def public_url(object_key: str) -> str:
 def delete_files(object_keys: List[str]) -> None:
     if not object_keys:
         return
-    resp = httpx.delete(
+    if LOCAL_STORAGE:
+        for key in object_keys:
+            path = LOCAL_STORAGE / key
+            if path.exists():
+                path.unlink()
+            parent = path.parent
+            if parent.exists() and not any(parent.iterdir()):
+                shutil.rmtree(parent, ignore_errors=True)
+        logger.info("Deleted %d local file(s)", len(object_keys))
+        return
+    resp = httpx.request(
+        "DELETE",
         f"{SUPABASE_URL}/storage/v1/object/{BUCKET}",
         content=json.dumps({"prefixes": object_keys}),
         headers={**_headers(), "Content-Type": "application/json"},
@@ -119,6 +145,11 @@ def delete_files(object_keys: List[str]) -> None:
 
 
 def list_prefix(prefix: str) -> List[str]:
+    if LOCAL_STORAGE:
+        base = LOCAL_STORAGE / prefix
+        if not base.exists():
+            return []
+        return [str(p.relative_to(LOCAL_STORAGE)).replace("\\", "/") for p in base.rglob("*") if p.is_file()]
     resp = httpx.post(
         f"{SUPABASE_URL}/storage/v1/object/list/{BUCKET}",
         json={"prefix": prefix, "limit": 1000},
