@@ -73,6 +73,7 @@ class Message(Base):
     role = Column(String(20), nullable=False)
     content = Column(Text, nullable=False)
     citations = Column(JSON, nullable=True)
+    attachment = Column(JSON, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
     chat = relationship("Chat", back_populates="messages")

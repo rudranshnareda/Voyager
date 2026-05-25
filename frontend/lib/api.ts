@@ -78,12 +78,19 @@ export interface Citation {
   url?: string | null;
 }
 
+export interface MessageAttachment {
+  text: string;
+  page_number: number;
+  image_data?: string | null;
+}
+
 export interface Message {
   id: string;
   chat_id: string;
   role: "user" | "assistant";
   content: string;
   citations: Citation[] | null;
+  attachment?: MessageAttachment | null;
   created_at: string;
 }
 

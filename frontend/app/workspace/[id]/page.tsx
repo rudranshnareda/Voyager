@@ -20,6 +20,7 @@ import {
   type Chat,
   type Document,
   type Message,
+  type MessageAttachment,
   type WorkspaceDetail,
 } from "@/lib/api";
 
@@ -241,6 +242,39 @@ function UploadZone({
 }
 
 // ── Message bubble ────────────────────────────────────────────────────────────
+
+function AttachmentBubble({ attachment }: { attachment: MessageAttachment }) {
+  const [expanded, setExpanded] = useState(false);
+  return (
+    <div className="mb-1.5 flex justify-end">
+      <div className="max-w-[80%] bg-indigo-500/10 border border-indigo-500/20 rounded-xl rounded-tr-sm px-3 py-2 text-xs text-indigo-300">
+        {attachment.image_data ? (
+          <div>
+            <button onClick={() => setExpanded(v => !v)} className="flex items-center gap-1.5 text-indigo-400 hover:text-indigo-200 transition-colors mb-1.5">
+              <span>👁</span>
+              <span className="font-medium">p.{attachment.page_number} — drawn region</span>
+              <span className="text-indigo-500">{expanded ? "▲" : "▼"}</span>
+            </button>
+            {expanded && (
+              <img
+                src={`data:image/png;base64,${attachment.image_data}`}
+                alt="Selected region"
+                className="rounded border border-indigo-500/30 object-contain max-h-48 max-w-full"
+              />
+            )}
+          </div>
+        ) : (
+          <div>
+            <span className="text-indigo-400 font-medium">📌 p.{attachment.page_number}: </span>
+            <span className="text-indigo-200/70">
+              {attachment.text.length > 120 ? attachment.text.slice(0, 120) + "…" : attachment.text}
+            </span>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
 
 function MessageBubble({
   message,
@@ -469,12 +503,16 @@ function ChatPanel({
 
   const doSend = async (chatId: string, text: string) => {
     const useWeb = webSearch || WEB_SEARCH_RE.test(text);
+    const attachment = highlightedContext
+      ? { text: highlightedContext.text, page_number: highlightedContext.page, image_data: highlightedContext.image_data ?? null }
+      : null;
     const optimistic: Message = {
       id: crypto.randomUUID(),
       chat_id: chatId,
       role: "user",
       content: text,
       citations: null,
+      attachment,
       created_at: new Date().toISOString(),
     };
     setMessages((prev) => [...prev, optimistic]);
@@ -597,11 +635,12 @@ function ChatPanel({
           </div>
         ) : (
           messages.map((msg) => (
-            <MessageBubble
-              key={msg.id}
-              message={msg}
-              onCitationClick={onCitationClick}
-            />
+            <div key={msg.id}>
+              {msg.role === "user" && msg.attachment && (
+                <AttachmentBubble attachment={msg.attachment} />
+              )}
+              <MessageBubble message={msg} onCitationClick={onCitationClick} />
+            </div>
           ))
         )}
         {sending && <TypingIndicator />}

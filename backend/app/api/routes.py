@@ -458,10 +458,6 @@ def send_message(chat_id: str, body: MessageCreate, db: Session = Depends(get_db
     )
     history = [{"role": m.role, "content": m.content} for m in reversed(recent)]
 
-    user_msg = Message(chat_id=chat_id, role="user", content=body.content)
-    db.add(user_msg)
-    db.commit()
-
     highlighted: dict | None = None
     if body.highlighted_context:
         highlighted = {
@@ -469,6 +465,10 @@ def send_message(chat_id: str, body: MessageCreate, db: Session = Depends(get_db
             "page_number": body.highlighted_context.page_number,
             "image_data": body.highlighted_context.image_data,
         }
+
+    user_msg = Message(chat_id=chat_id, role="user", content=body.content, attachment=highlighted)
+    db.add(user_msg)
+    db.commit()
 
     rag_result = rag_engine.retrieve(body.content, chat.workspace_id, highlighted_context=highlighted)
 

@@ -53,6 +53,12 @@ class Citation(BaseModel):
     url: Optional[str] = None  # set for web-search results; absent for document citations
 
 
+class MessageAttachment(BaseModel):
+    text: str
+    page_number: int
+    image_data: Optional[str] = None
+
+
 class MessageOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -61,6 +67,7 @@ class MessageOut(BaseModel):
     role: str
     content: str
     citations: Optional[List[Citation]] = None
+    attachment: Optional[MessageAttachment] = None
     created_at: datetime
 
 
