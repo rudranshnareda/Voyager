@@ -23,7 +23,7 @@ export function saveApiUrl(url: string): void {
 // ── Axios instance ────────────────────────────────────────────────────────────
 
 const api = axios.create({
-  headers: { "Content-Type": "application/json" },
+  headers: { "Content-Type": "application/json", "ngrok-skip-browser-warning": "1" },
 });
 
 // Resolve base URL on every request so settings changes take effect immediately
