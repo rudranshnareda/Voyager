@@ -229,7 +229,7 @@ export default function PDFViewer({
     let y = 0, firstVis = 0, lastVis = 0, foundFirst = false;
     for (let i = 0; i < n; i++) {
       const size = pageSizesRef.current[i + 1];
-      const h = size && size.w > 0 ? Math.round(baseW * (size.h / size.w)) : 1056;
+      const h = size && size.w > 0 ? Math.round(baseW * (size.h / size.w)) : Math.round(baseW * 1.414);
       if (!foundFirst && y + h > scrollTop) { firstVis = i; foundFirst = true; }
       if (foundFirst && y > visBottom) { lastVis = Math.max(firstVis, i - 1); break; }
       if (i === n - 1) lastVis = i;
