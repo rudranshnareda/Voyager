@@ -6,6 +6,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.routes import router
+from app.core.storage import ensure_bucket
 from app.db.database import init_db
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s | %(name)s | %(message)s")
@@ -16,6 +17,7 @@ logger = logging.getLogger(__name__)
 async def lifespan(_app: FastAPI):
     logger.info("Starting Voyager API — initialising database...")
     init_db()
+    ensure_bucket()
     yield
     logger.info("Voyager API shutting down.")
 

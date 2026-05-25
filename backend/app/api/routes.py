@@ -1,7 +1,6 @@
 import logging
 import os
 import re
-import shutil
 import threading
 import time
 from pathlib import Path
@@ -19,6 +18,7 @@ from app.api.schemas import (
     DocumentOut, ExtractRegionRequest, MessageCreate, MessageOut,
     SendMessageResponse, WorkspaceCreate, WorkspaceDetailOut, WorkspaceOut,
 )
+from app.core import storage as file_storage
 from app.core.ingestion import ingestion_pipeline
 from app.core.llm import llm_client
 from app.core.rag import rag_engine
@@ -31,13 +31,12 @@ load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
-UPLOAD_PATH = Path(os.getenv("UPLOAD_PATH", "../storage/workspaces"))
 CLERK_JWKS_URL = os.getenv("CLERK_JWKS_URL", "")
 
 # ── Clerk JWT auth ───────────────────────────────────────────────────────────
 
 _jwks_cache: dict = {"keys": [], "fetched_at": 0.0}
-_JWKS_TTL = 3600  # refresh public keys every hour
+_JWKS_TTL = 3600
 
 
 def _get_jwks() -> list:
@@ -67,13 +66,12 @@ def get_current_user(authorization: Optional[str] = Header(default=None)) -> str
             continue
     raise HTTPException(status_code=401, detail="Invalid or expired token")
 
-# Per-file locks so concurrent requests don't render the same PDF page simultaneously
+
 _render_locks: dict[str, threading.Lock] = {}
 _render_locks_mutex = threading.Lock()
 
 
-def _render_lock_for(file_path: Path) -> threading.Lock:
-    key = str(file_path)
+def _render_lock_for(key: str) -> threading.Lock:
     with _render_locks_mutex:
         if key not in _render_locks:
             _render_locks[key] = threading.Lock()
@@ -81,15 +79,13 @@ def _render_lock_for(file_path: Path) -> threading.Lock:
 
 
 def _safe_filename(name: str) -> str:
-    """Strip characters that are unsafe in file-system paths."""
     return re.sub(r"[^\w\-.]", "_", name)
 
 
-def _run_ingestion(document_id: str, file_path: Path, workspace_id: str) -> None:
-    """Background task — opens its own DB session since the request session is gone."""
+def _run_ingestion(document_id: str, storage_key: str, workspace_id: str) -> None:
     db = SessionLocal()
     try:
-        ingestion_pipeline.ingest_document(document_id, file_path, workspace_id, db)
+        ingestion_pipeline.ingest_document(document_id, storage_key, workspace_id, db)
     except Exception as exc:
         logger.error("Background ingestion failed for document %s: %s", document_id, exc)
     finally:
@@ -152,18 +148,13 @@ def delete_workspace(
     if ws.owner_id != user_id:
         raise HTTPException(status_code=403, detail="Access denied")
 
-    # Remove all vectors for this workspace in one shot
     try:
-        vector_store._client.delete_collection(f"workspace_{workspace_id}")
-    except Exception:
-        pass  # Collection may not exist if no documents were ever ingested
+        keys = file_storage.list_prefix(workspace_id)
+        file_storage.delete_files(keys)
+    except Exception as exc:
+        logger.warning("Could not delete Supabase Storage files for workspace %s: %s", workspace_id, exc)
 
-    # Remove uploaded files
-    ws_storage = UPLOAD_PATH / workspace_id
-    if ws_storage.exists():
-        shutil.rmtree(ws_storage)
-
-    db.delete(ws)  # cascades → Document → Chunk
+    db.delete(ws)
     db.commit()
 
 
@@ -179,33 +170,46 @@ async def upload_document(
     ws = db.get(Workspace, workspace_id)
     if not ws:
         raise HTTPException(status_code=404, detail="Workspace not found")
-
     if not file.filename or not file.filename.lower().endswith(".pdf"):
         raise HTTPException(status_code=400, detail="Only PDF files are accepted")
 
-    # Persist the file
-    save_dir = UPLOAD_PATH / workspace_id
-    save_dir.mkdir(parents=True, exist_ok=True)
+    import shutil
     safe_name = _safe_filename(file.filename)
-    file_path = save_dir / safe_name
 
-    with open(file_path, "wb") as f:
-        shutil.copyfileobj(file.file, f)
-
-    # Create Document record (status: pending)
+    # Create Document record first to get the ID
     doc = Document(
         workspace_id=workspace_id,
         filename=safe_name,
-        file_path=str(file_path),
+        file_path="pending",  # updated after upload
         status="pending",
     )
     db.add(doc)
     db.commit()
     db.refresh(doc)
 
-    # Ingestion runs after the response is returned
-    background_tasks.add_task(_run_ingestion, doc.id, file_path, workspace_id)
+    storage_key = f"{workspace_id}/{doc.id}/{safe_name}"
 
+    # Save to local temp dir for immediate ingestion access
+    local_path = file_storage.CACHE_DIR / doc.id / safe_name
+    local_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(local_path, "wb") as f:
+        shutil.copyfileobj(file.file, f)
+
+    # Upload to Supabase Storage
+    try:
+        file_data = local_path.read_bytes()
+        file_storage.upload_file(storage_key, file_data)
+    except Exception as exc:
+        logger.error("Supabase Storage upload failed: %s", exc)
+        doc.status = "failed"
+        db.commit()
+        raise HTTPException(status_code=500, detail=f"File upload failed: {exc}")
+
+    doc.file_path = storage_key
+    db.commit()
+    db.refresh(doc)
+
+    background_tasks.add_task(_run_ingestion, doc.id, storage_key, workspace_id)
     return doc
 
 
@@ -229,35 +233,24 @@ def get_document(document_id: str, db: Session = Depends(get_db)):
     return doc
 
 
-def _render_page_to_cache(file_path: Path, page_number: int, dpi: int) -> Path:
-    """Render one PDF page to a cached WebP image.
-
-    Tries pypdfium2 first (PDFium — fast, low RAM), falls back to PyMuPDF on
-    any failure. Both paths are guarded by a per-file lock so concurrent
-    requests for the same document don't race on the same page slot.
-    """
-    cache_dir = file_path.parent / f".page_cache_{dpi}dpi"
-    cache_dir.mkdir(exist_ok=True)
+def _render_page_to_cache(file_path: Path, document_id: str, page_number: int, dpi: int) -> Path:
+    cache_dir = file_storage.CACHE_DIR / document_id / f".page_cache_{dpi}dpi"
+    cache_dir.mkdir(parents=True, exist_ok=True)
     cache_path = cache_dir / f"page_{page_number:04d}.webp"
 
-    # Fast path: valid cached file already exists
     if cache_path.exists() and cache_path.stat().st_size > 0:
         return cache_path
 
-    lock = _render_lock_for(file_path)
+    lock = _render_lock_for(f"{document_id}:{page_number}:{dpi}")
     with lock:
-        # Re-check inside lock — another thread may have just written it
         if cache_path.exists() and cache_path.stat().st_size > 0:
             return cache_path
-
-        # Remove any zero-byte leftover from a previous failed attempt
         if cache_path.exists():
             cache_path.unlink(missing_ok=True)
 
-        # ── Try pypdfium2 (PDFium) ────────────────────────────────────────────
         try:
             import pypdfium2 as pdfium
-            from PIL import Image as PilImage  # noqa: F401 — verify PIL has WebP
+            from PIL import Image as PilImage
             doc = pdfium.PdfDocument(str(file_path))
             try:
                 page = doc[page_number - 1]
@@ -268,17 +261,12 @@ def _render_page_to_cache(file_path: Path, page_number: int, dpi: int) -> Path:
                 doc.close()
             return cache_path
         except Exception as exc:
-            logger.warning(
-                "pypdfium2 render failed for %s page %d dpi=%d: %s",
-                file_path.name, page_number, dpi, exc,
-            )
+            logger.warning("pypdfium2 render failed page %d dpi=%d: %s", page_number, dpi, exc)
             if cache_path.exists():
                 cache_path.unlink(missing_ok=True)
 
-        # ── Fallback: PyMuPDF (fitz) ──────────────────────────────────────────
         import fitz
         from PIL import Image as PilImage
-
         pdf = fitz.open(str(file_path))
         try:
             page = pdf[page_number - 1]
@@ -291,6 +279,16 @@ def _render_page_to_cache(file_path: Path, page_number: int, dpi: int) -> Path:
     return cache_path
 
 
+def _get_local_pdf(doc: Document) -> Path:
+    """Download PDF from Supabase Storage to local temp cache if needed."""
+    if doc.file_path == "pending":
+        raise HTTPException(status_code=404, detail="File not yet uploaded")
+    try:
+        return file_storage.get_local_path(doc.file_path, doc.id)
+    except Exception as exc:
+        raise HTTPException(status_code=404, detail=f"Could not retrieve file: {exc}")
+
+
 @router.get("/documents/{document_id}/pages/{page_number}")
 def get_document_page(
     document_id: str,
@@ -298,28 +296,25 @@ def get_document_page(
     dpi: int = 150,
     db: Session = Depends(get_db),
 ):
-    """Render a PDF page via PDFium and return a cached WebP image."""
     doc = db.get(Document, document_id)
     if not doc:
         raise HTTPException(status_code=404, detail="Document not found")
-    file_path = Path(doc.file_path)
-    if not file_path.exists():
-        raise HTTPException(status_code=404, detail="File not found on disk")
 
     dpi = max(72, min(dpi, 300))
     page_count = doc.page_count or 1
     if page_number < 1 or page_number > page_count:
         raise HTTPException(status_code=404, detail=f"Page {page_number} out of range")
 
+    file_path = _get_local_pdf(doc)
     try:
-        cache_path = _render_page_to_cache(file_path, page_number, dpi)
+        cache_path = _render_page_to_cache(file_path, document_id, page_number, dpi)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Render failed: {exc}")
 
     return FileResponse(
         path=str(cache_path),
         media_type="image/webp",
-        headers={"Cache-Control": "public, max-age=604800"},  # 1 week
+        headers={"Cache-Control": "public, max-age=604800"},
     )
 
 
@@ -329,28 +324,18 @@ def get_page_text_layer(
     page_number: int,
     db: Session = Depends(get_db),
 ):
-    """Return word-level bounding boxes for the text layer overlay.
-    Coordinates are normalised 0–1 relative to page dimensions."""
     doc = db.get(Document, document_id)
     if not doc:
         raise HTTPException(status_code=404, detail="Document not found")
-    file_path = Path(doc.file_path)
-    if not file_path.exists():
-        raise HTTPException(status_code=404, detail="File not found on disk")
 
+    file_path = _get_local_pdf(doc)
     try:
         import fitz
         pdf = fitz.open(str(file_path))
         page = pdf[page_number - 1]
         pw, ph = page.rect.width, page.rect.height
         words = [
-            {
-                "text": w[4],
-                "x": w[0] / pw,
-                "y": w[1] / ph,
-                "w": (w[2] - w[0]) / pw,
-                "h": (w[3] - w[1]) / ph,
-            }
+            {"text": w[4], "x": w[0] / pw, "y": w[1] / ph, "w": (w[2] - w[0]) / pw, "h": (w[3] - w[1]) / ph}
             for w in page.get_text("words")
             if w[4].strip()
         ]
@@ -365,9 +350,7 @@ def get_document_file(document_id: str, db: Session = Depends(get_db)):
     doc = db.get(Document, document_id)
     if not doc:
         raise HTTPException(status_code=404, detail="Document not found")
-    file_path = Path(doc.file_path)
-    if not file_path.exists():
-        raise HTTPException(status_code=404, detail="File not found on disk")
+    file_path = _get_local_pdf(doc)
     return FileResponse(
         path=str(file_path),
         media_type="application/pdf",
@@ -381,25 +364,18 @@ async def extract_document_region(
     body: ExtractRegionRequest,
     db: Session = Depends(get_db),
 ):
-    """Extract text or vision description from a bbox region of a PDF page."""
     doc = db.get(Document, document_id)
     if not doc:
         raise HTTPException(status_code=404, detail="Document not found")
     if doc.status != "ready":
         raise HTTPException(status_code=400, detail=f"Document not ready (status: {doc.status})")
-    if not Path(doc.file_path).exists():
-        raise HTTPException(status_code=404, detail="PDF file not found on disk")
 
+    file_path = _get_local_pdf(doc)
     from app.core.ocr import extract_region_smart
-
-    bbox = {"x": body.x, "y": body.y, "width": body.width, "height": body.height}
-
     try:
-        result = extract_region_smart(doc.file_path, body.page_number, bbox)
+        return extract_region_smart(str(file_path), body.page_number, {"x": body.x, "y": body.y, "width": body.width, "height": body.height})
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))
-
-    return result
 
 
 @router.post("/documents/{document_id}/retry", response_model=DocumentOut)
@@ -413,15 +389,13 @@ def retry_document(
         raise HTTPException(status_code=404, detail="Document not found")
     if doc.status not in ("failed", "processing"):
         raise HTTPException(status_code=400, detail=f"Document is '{doc.status}', not retryable")
-    if not Path(doc.file_path).exists():
-        raise HTTPException(status_code=404, detail="Original file no longer on disk — re-upload instead")
 
     doc.status = "pending"
     doc.progress = 0
     db.commit()
     db.refresh(doc)
 
-    background_tasks.add_task(_run_ingestion, doc.id, Path(doc.file_path), doc.workspace_id)
+    background_tasks.add_task(_run_ingestion, doc.id, doc.file_path, doc.workspace_id)
     return doc
 
 
@@ -431,26 +405,21 @@ def delete_document(document_id: str, db: Session = Depends(get_db)):
     if not doc:
         raise HTTPException(status_code=404, detail="Document not found")
 
-    # Remove vectors from ChromaDB first
     vector_store.delete_document(doc.workspace_id, document_id)
 
-    # Remove physical file
-    file_path = Path(doc.file_path)
-    if file_path.exists():
-        file_path.unlink()
+    try:
+        file_storage.delete_files([doc.file_path])
+    except Exception as exc:
+        logger.warning("Could not delete Supabase Storage file %s: %s", doc.file_path, exc)
 
-    db.delete(doc)  # cascades → Chunk rows
+    db.delete(doc)
     db.commit()
 
 
 # ── Chats ────────────────────────────────────────────────────────────────────
 
 @router.post("/workspaces/{workspace_id}/chats", response_model=ChatOut, status_code=201)
-def create_chat(
-    workspace_id: str,
-    body: ChatCreate,
-    db: Session = Depends(get_db),
-):
+def create_chat(workspace_id: str, body: ChatCreate, db: Session = Depends(get_db)):
     if not db.get(Workspace, workspace_id):
         raise HTTPException(status_code=404, detail="Workspace not found")
     chat = Chat(workspace_id=workspace_id, title=body.title)
@@ -485,23 +454,18 @@ def delete_chat(chat_id: str, db: Session = Depends(get_db)):
     chat = db.get(Chat, chat_id)
     if not chat:
         raise HTTPException(status_code=404, detail="Chat not found")
-    db.delete(chat)  # cascades → Message rows
+    db.delete(chat)
     db.commit()
 
 
 # ── Messages ─────────────────────────────────────────────────────────────────
 
 @router.post("/chats/{chat_id}/messages", response_model=SendMessageResponse)
-def send_message(
-    chat_id: str,
-    body: MessageCreate,
-    db: Session = Depends(get_db),
-):
+def send_message(chat_id: str, body: MessageCreate, db: Session = Depends(get_db)):
     chat = db.get(Chat, chat_id)
     if not chat:
         raise HTTPException(status_code=404, detail="Chat not found")
 
-    # Load history BEFORE saving the new user message so it isn't included
     recent = (
         db.query(Message)
         .filter(Message.chat_id == chat_id)
@@ -511,12 +475,10 @@ def send_message(
     )
     history = [{"role": m.role, "content": m.content} for m in reversed(recent)]
 
-    # Save user message
     user_msg = Message(chat_id=chat_id, role="user", content=body.content)
     db.add(user_msg)
     db.commit()
 
-    # Convert highlighted_context Pydantic model → plain dict for core modules
     highlighted: dict | None = None
     if body.highlighted_context:
         highlighted = {
@@ -525,31 +487,20 @@ def send_message(
             "image_data": body.highlighted_context.image_data,
         }
 
-    # RAG retrieval
-    rag_result = rag_engine.retrieve(
-        body.content, chat.workspace_id, highlighted_context=highlighted
-    )
+    rag_result = rag_engine.retrieve(body.content, chat.workspace_id, highlighted_context=highlighted)
 
-    # Web search (optional)
     web_chunks: list = []
     if body.use_web_search:
         from app.core.web_search import search_web
         try:
             web_results = search_web(body.content)
             web_chunks = [
-                {
-                    "content":     r["content"],
-                    "filename":    r["title"],
-                    "page_number": 0,
-                    "url":         r["url"],
-                    "distance":    0.0,
-                }
+                {"content": r["content"], "filename": r["title"], "page_number": 0, "url": r["url"], "distance": 0.0}
                 for r in web_results
             ]
         except Exception as exc:
             logger.warning("Web search failed: %s", exc)
 
-    # LLM generation
     try:
         llm_result = llm_client.generate_answer(
             query=body.content,
@@ -561,7 +512,6 @@ def send_message(
     except RuntimeError as exc:
         raise HTTPException(status_code=503, detail=str(exc))
 
-    # Save assistant message with citations
     assistant_msg = Message(
         chat_id=chat_id,
         role="assistant",

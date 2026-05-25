@@ -1,6 +1,7 @@
 from datetime import datetime
 from uuid import uuid4
 
+from pgvector.sqlalchemy import Vector
 from sqlalchemy import Column, DateTime, ForeignKey, Integer, JSON, String, Text
 from sqlalchemy.orm import DeclarativeBase, relationship
 
@@ -15,7 +16,7 @@ class Workspace(Base):
     id = Column(String(36), primary_key=True, default=lambda: str(uuid4()))
     name = Column(String(255), nullable=False, unique=True)
     emoji = Column(String(10), nullable=False, default="📁")
-    owner_id = Column(String(255), nullable=True, index=True)  # Clerk user ID
+    owner_id = Column(String(255), nullable=True, index=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
     documents = relationship("Document", back_populates="workspace", cascade="all, delete-orphan")
@@ -28,11 +29,10 @@ class Document(Base):
     id = Column(String(36), primary_key=True, default=lambda: str(uuid4()))
     workspace_id = Column(String(36), ForeignKey("workspaces.id"), nullable=False)
     filename = Column(String(255), nullable=False)
-    file_path = Column(String(1024), nullable=False)
+    file_path = Column(String(1024), nullable=False)  # Supabase Storage object key
     page_count = Column(Integer, nullable=True)
-    # valid values: pending | processing | ready | failed
     status = Column(String(20), nullable=False, default="pending")
-    progress = Column(Integer, nullable=False, default=0)  # 0-100
+    progress = Column(Integer, nullable=False, default=0)
     created_at = Column(DateTime, default=datetime.utcnow)
 
     workspace = relationship("Workspace", back_populates="documents")
@@ -47,8 +47,7 @@ class Chunk(Base):
     content = Column(Text, nullable=False)
     page_number = Column(Integer, nullable=False)
     chunk_index = Column(Integer, nullable=False)
-    # chroma_id links this row to the vector in ChromaDB
-    chroma_id = Column(String(36), nullable=False)
+    embedding = Column(Vector(768), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
     document = relationship("Document", back_populates="chunks")
@@ -71,10 +70,8 @@ class Message(Base):
 
     id = Column(String(36), primary_key=True, default=lambda: str(uuid4()))
     chat_id = Column(String(36), ForeignKey("chats.id"), nullable=False)
-    # valid values: user | assistant
     role = Column(String(20), nullable=False)
     content = Column(Text, nullable=False)
-    # list of {document_id, filename, page_number, excerpt} dicts, or null
     citations = Column(JSON, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
