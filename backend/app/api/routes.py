@@ -248,33 +248,16 @@ def _render_page_to_cache(file_path: Path, document_id: str, page_number: int, d
         if cache_path.exists():
             cache_path.unlink(missing_ok=True)
 
-        try:
-            import pypdfium2 as pdfium
-            from PIL import Image as PilImage
-            doc = pdfium.PdfDocument(str(file_path))
-            try:
-                page = doc[page_number - 1]
-                bitmap = page.render(scale=dpi / 72, rotation=0)
-                pil_img = bitmap.to_pil()
-                pil_img.save(str(cache_path), "WEBP", quality=88, method=4)
-            finally:
-                doc.close()
-            return cache_path
-        except Exception as exc:
-            logger.warning("pypdfium2 render failed page %d dpi=%d: %s", page_number, dpi, exc)
-            if cache_path.exists():
-                cache_path.unlink(missing_ok=True)
-
-        import fitz
+        import pypdfium2 as pdfium
         from PIL import Image as PilImage
-        pdf = fitz.open(str(file_path))
+        doc = pdfium.PdfDocument(str(file_path))
         try:
-            page = pdf[page_number - 1]
-            pix = page.get_pixmap(matrix=fitz.Matrix(dpi / 72, dpi / 72), alpha=False)
-            pil_img = PilImage.frombytes("RGB", (pix.width, pix.height), pix.samples)
+            page = doc[page_number - 1]
+            bitmap = page.render(scale=dpi / 72, rotation=0)
+            pil_img = bitmap.to_pil()
             pil_img.save(str(cache_path), "WEBP", quality=88, method=4)
         finally:
-            pdf.close()
+            doc.close()
 
     return cache_path
 
