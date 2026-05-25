@@ -1,6 +1,7 @@
 import json
 import logging
 import os
+import tempfile
 import threading
 from pathlib import Path
 from typing import List
@@ -15,7 +16,7 @@ logger = logging.getLogger(__name__)
 SUPABASE_URL = os.getenv("SUPABASE_URL", "")
 SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_KEY", "")
 BUCKET = "documents"
-CACHE_DIR = Path("/tmp/voyager_cache")
+CACHE_DIR = Path(tempfile.gettempdir()) / "voyager_cache"
 
 _download_locks: dict = {}
 _download_locks_mutex = threading.Lock()
