@@ -479,6 +479,7 @@ function ChatPanel({
     };
     setMessages((prev) => [...prev, optimistic]);
     setInput("");
+    onClearHighlight?.();
     setSending(true);
     setError(null);
     try {
