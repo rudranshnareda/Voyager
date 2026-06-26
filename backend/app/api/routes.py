@@ -2,11 +2,9 @@ import logging
 import os
 import re
 import threading
-import time
 from pathlib import Path
 from typing import Optional
 
-import httpx
 from dotenv import load_dotenv
 from fastapi import APIRouter, BackgroundTasks, Depends, File, Header, HTTPException, UploadFile
 from fastapi.responses import FileResponse
@@ -31,39 +29,22 @@ load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
-CLERK_JWKS_URL = os.getenv("CLERK_JWKS_URL", "")
+SUPABASE_JWT_SECRET = os.getenv("SUPABASE_JWT_SECRET", "")
 
-# ── Clerk JWT auth ───────────────────────────────────────────────────────────
-
-_jwks_cache: dict = {"keys": [], "fetched_at": 0.0}
-_JWKS_TTL = 3600
-
-
-def _get_jwks() -> list:
-    now = time.time()
-    if not _jwks_cache["keys"] or now - _jwks_cache["fetched_at"] > _JWKS_TTL:
-        if not CLERK_JWKS_URL:
-            raise HTTPException(status_code=500, detail="CLERK_JWKS_URL not configured")
-        resp = httpx.get(CLERK_JWKS_URL, timeout=10)
-        resp.raise_for_status()
-        _jwks_cache["keys"] = resp.json()["keys"]
-        _jwks_cache["fetched_at"] = now
-    return _jwks_cache["keys"]
+# ── Supabase JWT auth ─────────────────────────────────────────────────────────
 
 
 def get_current_user(authorization: Optional[str] = Header(default=None)) -> str:
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="Missing authentication token")
     token = authorization.removeprefix("Bearer ").strip()
-    keys = _get_jwks()
-    for key in keys:
-        try:
-            payload = jwt.decode(token, key, algorithms=["RS256"])
-            user_id: str = payload.get("sub", "")
-            if user_id:
-                return user_id
-        except JWTError:
-            continue
+    try:
+        payload = jwt.decode(token, SUPABASE_JWT_SECRET, algorithms=["HS256"])
+        user_id: str = payload.get("sub", "")
+        if user_id:
+            return user_id
+    except JWTError:
+        pass
     raise HTTPException(status_code=401, detail="Invalid or expired token")
 
 

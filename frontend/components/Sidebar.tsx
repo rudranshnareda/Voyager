@@ -1,9 +1,11 @@
 "use client";
 
-import { UserButton } from "@clerk/nextjs";
 import Link from "next/link";
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import { useState } from "react";
+import { createClient } from "@/lib/supabase";
+
+const supabase = createClient();
 
 interface NavItem {
   href: string;
@@ -35,7 +37,14 @@ const NAV_ITEMS: NavItem[] = [
 
 export default function Sidebar() {
   const pathname = usePathname();
+  const router = useRouter();
   const [collapsed, setCollapsed] = useState(false);
+
+  const handleSignOut = async () => {
+    await supabase.auth.signOut();
+    router.push("/sign-in");
+    router.refresh();
+  };
 
   return (
     <aside
@@ -91,9 +100,15 @@ export default function Sidebar() {
 
       {/* Footer */}
       <div className={`px-3 py-3 border-t border-zinc-800 flex items-center ${collapsed ? "justify-center" : "gap-2"}`}>
-        <UserButton
-          appearance={{ elements: { avatarBox: "w-7 h-7" } }}
-        />
+        <button
+          onClick={handleSignOut}
+          title="Sign out"
+          className="p-1.5 rounded-md text-zinc-500 hover:text-white hover:bg-zinc-800 transition-colors shrink-0"
+        >
+          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.75}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
+          </svg>
+        </button>
         {!collapsed && <p className="text-xs text-zinc-600">v0.1.0</p>}
       </div>
     </aside>
