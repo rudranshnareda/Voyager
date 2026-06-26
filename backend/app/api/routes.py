@@ -5,6 +5,7 @@ import threading
 from pathlib import Path
 from typing import Optional
 
+import httpx
 from dotenv import load_dotenv
 from fastapi import APIRouter, BackgroundTasks, Depends, File, Header, HTTPException, UploadFile
 from fastapi.responses import FileResponse
@@ -30,8 +31,36 @@ router = APIRouter()
 logger = logging.getLogger(__name__)
 
 SUPABASE_JWT_SECRET = os.getenv("SUPABASE_JWT_SECRET", "")
+SUPABASE_URL = os.getenv("SUPABASE_URL", "").rstrip("/")
+_JWKS_URL = f"{SUPABASE_URL}/auth/v1/.well-known/jwks.json" if SUPABASE_URL else ""
 
 # ── Supabase JWT auth ─────────────────────────────────────────────────────────
+#
+# Modern Supabase projects sign user access tokens with an asymmetric key
+# (ES256/RS256) published via JWKS; older projects use a shared HS256 secret.
+# Support both: pick the verification path from the token's `alg` header.
+
+_jwks_cache: dict[str, dict] = {}
+_jwks_mutex = threading.Lock()
+
+
+def _load_jwks(force: bool = False) -> None:
+    if _jwks_cache and not force:
+        return
+    with _jwks_mutex:
+        if _jwks_cache and not force:
+            return
+        resp = httpx.get(_JWKS_URL, timeout=10.0)
+        resp.raise_for_status()
+        keys = resp.json().get("keys", [])
+        _jwks_cache.clear()
+        _jwks_cache.update({k["kid"]: k for k in keys if "kid" in k})
+
+
+def _signing_key_for(kid: str) -> Optional[dict]:
+    if kid not in _jwks_cache:
+        _load_jwks(force=True)  # key may have rotated — refetch once
+    return _jwks_cache.get(kid)
 
 
 def get_current_user(authorization: Optional[str] = Header(default=None)) -> str:
@@ -39,18 +68,26 @@ def get_current_user(authorization: Optional[str] = Header(default=None)) -> str
         raise HTTPException(status_code=401, detail="Missing authentication token")
     token = authorization.removeprefix("Bearer ").strip()
     try:
-        payload = jwt.decode(
-            token,
-            SUPABASE_JWT_SECRET,
-            algorithms=["HS256"],
-            audience="authenticated",
-        )
+        header = jwt.get_unverified_header(token)
+        alg = header.get("alg", "")
+        if alg.startswith(("ES", "RS")):
+            _load_jwks()
+            key = _signing_key_for(header.get("kid", ""))
+            if key is None:
+                raise JWTError(f"no JWKS key for kid={header.get('kid')}")
+            payload = jwt.decode(token, key, algorithms=[alg], audience="authenticated")
+        else:
+            payload = jwt.decode(
+                token, SUPABASE_JWT_SECRET, algorithms=["HS256"], audience="authenticated"
+            )
         user_id: str = payload.get("sub", "")
         if user_id:
             return user_id
         logger.warning("JWT verified but no 'sub' claim present")
     except JWTError as exc:
         logger.warning("JWT verification failed: %s", exc)
+    except httpx.HTTPError as exc:
+        logger.error("Failed to fetch JWKS: %s", exc)
     raise HTTPException(status_code=401, detail="Invalid or expired token")
 
 
