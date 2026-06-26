@@ -271,7 +271,7 @@ export async function getPageTextLayer(
 
 export async function testConnection(): Promise<boolean> {
   try {
-    await api.get("/api/workspaces", { timeout: 5000 });
+    await axios.get(`${getApiUrl()}/health`, { timeout: 5000 });
     return true;
   } catch {
     return false;
