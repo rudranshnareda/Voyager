@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
+import axios from "axios";
 import {
   createWorkspace,
   deleteWorkspace,
@@ -9,6 +10,25 @@ import {
   type Workspace,
 } from "@/lib/api";
 import ConfirmDialog from "@/components/ConfirmDialog";
+
+// Build a detailed, human-readable error string from any thrown value.
+function describeError(err: unknown): string {
+  if (axios.isAxiosError(err)) {
+    const url = `${err.config?.baseURL ?? ""}${err.config?.url ?? ""}`;
+    if (err.response) {
+      const body =
+        typeof err.response.data === "string"
+          ? err.response.data
+          : JSON.stringify(err.response.data);
+      return `HTTP ${err.response.status} from ${url} — ${body}`;
+    }
+    if (err.request) {
+      return `No response from ${url} (network/CORS blocked). ${err.message}`;
+    }
+    return `Request setup failed: ${err.message}`;
+  }
+  return String(err);
+}
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -245,8 +265,8 @@ export default function DashboardPage() {
     try {
       const data = await getWorkspaces();
       setWorkspaces(data);
-    } catch {
-      setError("Could not load workspaces. Is the backend running?");
+    } catch (err) {
+      setError(describeError(err));
     } finally {
       setLoading(false);
     }
