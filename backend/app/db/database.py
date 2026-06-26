@@ -21,11 +21,13 @@ logger = logging.getLogger(__name__)
 def init_db() -> None:
     with engine.connect() as conn:
         conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
+        conn.commit()
+    Base.metadata.create_all(bind=engine)
+    with engine.connect() as conn:
         conn.execute(text(
             "ALTER TABLE messages ADD COLUMN IF NOT EXISTS attachment JSONB"
         ))
         conn.commit()
-    Base.metadata.create_all(bind=engine)
     logger.info("Database initialised")
 
 
