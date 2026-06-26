@@ -39,12 +39,18 @@ def get_current_user(authorization: Optional[str] = Header(default=None)) -> str
         raise HTTPException(status_code=401, detail="Missing authentication token")
     token = authorization.removeprefix("Bearer ").strip()
     try:
-        payload = jwt.decode(token, SUPABASE_JWT_SECRET, algorithms=["HS256"])
+        payload = jwt.decode(
+            token,
+            SUPABASE_JWT_SECRET,
+            algorithms=["HS256"],
+            audience="authenticated",
+        )
         user_id: str = payload.get("sub", "")
         if user_id:
             return user_id
-    except JWTError:
-        pass
+        logger.warning("JWT verified but no 'sub' claim present")
+    except JWTError as exc:
+        logger.warning("JWT verification failed: %s", exc)
     raise HTTPException(status_code=401, detail="Invalid or expired token")
 
 
