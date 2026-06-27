@@ -2,14 +2,30 @@ import axios from "axios";
 
 // ── Base URL helpers ──────────────────────────────────────────────────────────
 
+// In production (Vercel), no env var is set and calls go through the /proxy
+// rewrite in next.config.ts, which forwards to Railway server-side.
+// In local dev, set NEXT_PUBLIC_API_URL=http://127.0.0.1:8000 in .env.local.
 export const DEFAULT_API_URL =
-  process.env.NEXT_PUBLIC_API_URL ?? "http://127.0.0.1:8000";
+  process.env.NEXT_PUBLIC_API_URL ?? "/proxy";
 
 const STORAGE_KEY = "voyager_api_url";
 
+// Railway domains — if a user saved one of these directly, migrate them to the
+// proxy so their requests go through Vercel (bypasses ISP DNS blocks).
+const RAILWAY_DOMAINS = [
+  "voyager-production-58d9.up.railway.app",
+  "voyager-production-4dc3.up.railway.app",
+];
+
 export function getApiUrl(): string {
   if (typeof window === "undefined") return DEFAULT_API_URL;
-  return localStorage.getItem(STORAGE_KEY) ?? DEFAULT_API_URL;
+  const saved = localStorage.getItem(STORAGE_KEY);
+  if (!saved) return DEFAULT_API_URL;
+  if (RAILWAY_DOMAINS.some((d) => saved.includes(d))) {
+    localStorage.removeItem(STORAGE_KEY);
+    return DEFAULT_API_URL;
+  }
+  return saved;
 }
 
 export function saveApiUrl(url: string): void {
